@@ -1,95 +1,99 @@
-pipeline { 
+pipeline {
     agent any
-    environment {
-registry = "sawsanselmi/devops"
-registryCredential = 'sawsanselmi'
-dockerImage = 'tpachat'
-}
-        
-    stages {
-        stage("Cloning Project"){
-            steps {
-                git branch: 'main', 
-                url: 'https://github.com/sawsanSe/CICD.git'
-                echo 'checkout stage'
-            }
-        }
-        
-        stage ('MVN clean') {
-      steps {
-        sh 'mvn clean -e'
-        echo 'Build stage done'
-      }
-    }
-    
-        stage("compile Project"){
-            steps {
-                 sh 'mvn compile -X -e'
-                  echo 'compile stage done'
-            }
-        }
-        stage("unit tests"){
-            steps {
-                 sh 'mvn test'
-                  echo 'unit tests stage done'
-            }
-        }
-        
-        stage("SonarQube Analysis") {
-          agent any  
-           steps {
-                  //sh 'mvn sonar:sonar -Dsonar.projectKey=tpAchat -Dsonar.host.url=http://192.168.10.114:9000 -Dsonar.login=717e16eed6adbb836f32c1b9ee9721acaa488237'
-                  echo 'sonar static analysis done'
-           }
-         }
-          
-          stage("mvn build") {
-            steps {
-                script {
-                    // If you are using Windows then you should use "bat" step
-                    // Since unit testing is out of the scope we skip them
-                    sh "mvn package -DskipTests=true"
-                                      echo 'Build project Done'
 
-                }
+    environment {
+        SONARQUBE_URL = 'http://193.95.57.13:9000'
+        NEXUS_URL = 'http://193.95.57.13:8081/repository/maven-releases/'
+        registry = "nietzsche11/devops"           // Docker registry address
+        registryCredential = 'docker'            // Jenkins credential ID for Docker Hub
+        dockerImage = 'tpachat'                  // Docker image name
+    }
+
+    stages {
+        stage("Cloning Project") {
+            steps {
+                git branch: 'main', url: 'https://github.com/eya222/Devops.git', credentialsId: 'github'
+                echo 'Checkout stage completed'
             }
         }
+
+        stage("Build and Analyze") {
+            steps {
+                sh 'mvn clean package -DskipTests'  // Clean, build (skip tests)
+
+                withCredentials([string(credentialsId: 'sonarqube', variable: 'SONARQUBE_TOKEN')]) {
+                    sh """
+                        mvn sonar:sonar \
+                            -Dsonar.projectKey=Devops \
+                            -Dsonar.host.url=${SONARQUBE_URL} \
+                            -Dsonar.login=$SONARQUBE_TOKEN \
+                            -Dsonar.sources=src/main/java \
+                            -Dsonar.tests=src/test/java
+                    """
+                }
+                echo 'SonarQube analysis completed'
+            }
+        }
+
         stage("Nexus Deploy") {
             steps {
                 script {
-                    // If you are using Windows then you should use "bat" step
-                    // Since unit testing is out of the scope we skip them
-                    //sh "mvn clean package deploy:deploy -DgroupId=tn.esprit -DartifactId=FirstMavenProject -Dversion=1.0 -DgeneratePom=true -Dpackaging=jar -DrepositoryId=deploymentRepo -Durl=http://http://192.168.10.114:8081/repository/maven-releases/ -Dfile=target/FirstMavenProject-1.0.jar"
-                                  echo 'Nexus Deployment done'
-
-                    
+                    withCredentials([usernamePassword(credentialsId: 'nexus', usernameVariable: 'NEXUS_USER', passwordVariable: 'NEXUS_PASS')]) {
+                        sh """
+                            mvn deploy:deploy-file \
+                                -DgroupId=tn.esprit \
+                                -DartifactId=tpAchatProject \
+                                -Dversion=1.0 \
+                                -Dpackaging=jar \
+                                -Dfile=target/tpAchatProject-1.0.jar \
+                                -DrepositoryId=deploymentRepo \
+                                -Durl=${NEXUS_URL} \
+                                -Dusername=$NEXUS_USER \
+                                -Dpassword=$NEXUS_PASS \
+                                -DgeneratePom=true 
+                        """
+                        echo 'Nexus deployment completed'
+                    }
                 }
             }
         }
-        
-   stage('Building our image') {
-steps {
-script {
-dockerImage = docker.build registry + ":$BUILD_NUMBER"
-}
-}
-}
-stage('Deploy our image') {
-steps {
-script {
-docker.withRegistry( '', registryCredential ) {
-dockerImage.push()
-}
-}
-}
-}
-stage('Cleaning up') {
-steps {
-sh "docker rmi $registry:$BUILD_NUMBER"
-}
-}
-}
-}
 
+        stage('Build Docker Image') {
+            steps {
+                script {
+                    // Log in to Docker registry using credentials stored in Jenkins
+                    docker.withRegistry('https://index.docker.io/v1/', registryCredential) {
+                        // Build the Docker image
+                        dockerImage = docker.build("${registry}/${dockerImage}:${BUILD_NUMBER}")
+                    }
+                }
+            }
+        }
 
-    
+        stage('Deploy Docker Image') {
+            steps {
+                script {
+                    // Push the Docker image to the registry
+                    docker.withRegistry('https://index.docker.io/v1/', registryCredential) {
+                        dockerImage.push()
+                    }
+                }
+            }
+        }
+
+        stage('Clean up') {
+            steps {
+                sh "docker rmi ${registry}/${dockerImage}:${BUILD_NUMBER}"
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'Build, SonarQube analysis, Nexus deployment, and Docker image deployment completed successfully'
+        }
+        failure {
+            echo 'Pipeline failed. Check logs for errors.'
+        }
+    }
+}
